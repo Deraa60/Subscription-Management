@@ -12,6 +12,7 @@
 (define-constant ERROR-SAME-PLAN-UPGRADE (err u107))
 (define-constant ERROR-REFUND-PERIOD-EXPIRED (err u108))
 (define-constant ERROR-INVALID-PLAN-CHANGE (err u109))
+(define-constant ERROR-INVALID-INPUT (err u110))
 
 ;; Data vars
 (define-data-var service-administrator principal tx-sender)
@@ -103,6 +104,12 @@
     )
 )
 
+(define-private (validate-features (features (list 10 (string-ascii 50))))
+    (let ((feature-count (len features)))
+        (and (> feature-count u0) (<= feature-count u10))
+    )
+)
+
 ;; Function for creating subscription plans
 (define-public (create-subscription-plan 
     (plan-type (string-ascii 20))
@@ -113,6 +120,11 @@
     (refundable bool))
     (begin
         (asserts! (verify-administrator-access) ERROR-UNAUTHORIZED-ACCESS)
+        (asserts! (> cost u0) ERROR-INVALID-INPUT)
+        (asserts! (> duration u0) ERROR-INVALID-INPUT)
+        (asserts! (> tier u0) ERROR-INVALID-INPUT)
+        (asserts! (validate-features features) ERROR-INVALID-INPUT)
+        (asserts! (not (is-eq plan-type "")) ERROR-INVALID-INPUT)
         (ok (map-set SubscriptionPlanDetails
             plan-type
             {
@@ -134,8 +146,9 @@
         (subscription-cost (get plan-cost plan-info))
         (existing-subscription (get-user-subscription-info tx-sender))
     )
-    ;; Check if subscription exists - if it's none (not found), we can proceed
     (asserts! (is-none existing-subscription) ERROR-SUBSCRIPTION-EXISTS)
+    (asserts! (not (is-eq selected-plan-type "")) ERROR-INVALID-INPUT)
+    (asserts! (> subscription-cost u0) ERROR-INVALID-INPUT)
     (try! (stx-transfer? subscription-cost tx-sender (var-get service-administrator)))
     
     (ok (map-set UserSubscriptionDetails
@@ -160,6 +173,7 @@
     (asserts! (get subscription-active subscription) ERROR-NO-ACTIVE-SUBSCRIPTION)
     (asserts! (get allows-refunds plan-info) ERROR-INVALID-REFUND-AMOUNT)
     (asserts! (> refund-amount u0) ERROR-INVALID-REFUND-AMOUNT)
+    (asserts! (not (is-eq refund-reason "")) ERROR-INVALID-INPUT)
     
     (try! (process-refund tx-sender refund-amount refund-reason))
     
@@ -243,6 +257,7 @@
 (define-public (set-refund-period (new-period uint))
     (begin
         (asserts! (verify-administrator-access) ERROR-UNAUTHORIZED-ACCESS)
+        (asserts! (> new-period u0) ERROR-INVALID-INPUT)
         (ok (var-set refund-period-limit new-period))
     )
 )
@@ -250,6 +265,7 @@
 (define-public (set-plan-change-fee (new-fee uint))
     (begin
         (asserts! (verify-administrator-access) ERROR-UNAUTHORIZED-ACCESS)
+        (asserts! (>= new-fee u0) ERROR-INVALID-INPUT)
         (ok (var-set plan-change-fee new-fee))
     )
 )
