@@ -27,18 +27,18 @@
         subscription-active: bool,
         subscription-start-timestamp: uint,
         subscription-end-timestamp: uint,
-        current-subscription-plan: (string-utf8 20),
+        current-subscription-plan: (string-ascii 20),
         last-payment-amount: uint,
         remaining-credit: uint
     }
 )
 
 (define-map SubscriptionPlanDetails
-    (string-utf8 20)
+    (string-ascii 20)
     {
         plan-cost: uint,
         plan-duration: uint,
-        plan-features: (list 10 (string-utf8 50)),
+        plan-features: (list 10 (string-ascii 50)),
         plan-tier: uint,  ;; Higher number means higher tier
         allows-refunds: bool
     }
@@ -48,7 +48,7 @@
     { user: principal, timestamp: uint }
     {
         refund-amount: uint,
-        reason: (string-utf8 50)
+        reason: (string-ascii 50)
     }
 )
 
@@ -57,7 +57,7 @@
     (map-get? UserSubscriptionDetails subscriber-address)
 )
 
-(define-read-only (get-plan-details (subscription-plan-type (string-utf8 20)))
+(define-read-only (get-plan-details (subscription-plan-type (string-ascii 20)))
     (map-get? SubscriptionPlanDetails subscription-plan-type)
 )
 
@@ -89,7 +89,7 @@
     (is-eq tx-sender (var-get service-administrator))
 )
 
-(define-private (process-refund (user principal) (refund-amount uint) (refund-reason (string-utf8 50)))
+(define-private (process-refund (user principal) (refund-amount uint) (refund-reason (string-ascii 50)))
     (begin
         (try! (stx-transfer? refund-amount (var-get service-administrator) user))
         (map-set RefundHistory
@@ -103,14 +103,39 @@
     )
 )
 
+;; Function for creating subscription plans
+(define-public (create-subscription-plan 
+    (plan-type (string-ascii 20))
+    (cost uint)
+    (duration uint)
+    (features (list 10 (string-ascii 50)))
+    (tier uint)
+    (refundable bool))
+    (begin
+        (asserts! (verify-administrator-access) ERROR-UNAUTHORIZED-ACCESS)
+        (ok (map-set SubscriptionPlanDetails
+            plan-type
+            {
+                plan-cost: cost,
+                plan-duration: duration,
+                plan-features: features,
+                plan-tier: tier,
+                allows-refunds: refundable
+            }
+        ))
+    )
+)
+
 ;; Public functions for plan management
-(define-public (purchase-subscription (selected-plan-type (string-utf8 20)))
+(define-public (purchase-subscription (selected-plan-type (string-ascii 20)))
     (let (
         (plan-info (unwrap! (map-get? SubscriptionPlanDetails selected-plan-type) ERROR-INVALID-SUBSCRIPTION-TYPE))
         (current-block-height block-height)
         (subscription-cost (get plan-cost plan-info))
+        (existing-subscription (get-user-subscription-info tx-sender))
     )
-    (asserts! (not (check-subscription-status tx-sender)) ERROR-SUBSCRIPTION-EXISTS)
+    ;; Check if subscription exists - if it's none (not found), we can proceed
+    (asserts! (is-none existing-subscription) ERROR-SUBSCRIPTION-EXISTS)
     (try! (stx-transfer? subscription-cost tx-sender (var-get service-administrator)))
     
     (ok (map-set UserSubscriptionDetails
@@ -123,10 +148,10 @@
             last-payment-amount: subscription-cost,
             remaining-credit: u0
         }
-    )))
-)
+    ))
+))
 
-(define-public (request-refund (refund-reason (string-utf8 50)))
+(define-public (request-refund (refund-reason (string-ascii 50)))
     (let (
         (subscription (unwrap! (map-get? UserSubscriptionDetails tx-sender) ERROR-NO-ACTIVE-SUBSCRIPTION))
         (plan-info (unwrap! (map-get? SubscriptionPlanDetails (get current-subscription-plan subscription)) ERROR-INVALID-SUBSCRIPTION-TYPE))
@@ -148,67 +173,71 @@
             last-payment-amount: u0,
             remaining-credit: u0
         }
-    )))
-)
+    ))
+))
 
-(define-public (upgrade-subscription-plan (new-plan-type (string-utf8 20)))
-    (let (
-        (current-subscription (unwrap! (map-get? UserSubscriptionDetails tx-sender) ERROR-NO-ACTIVE-SUBSCRIPTION))
-        (current-plan (unwrap! (map-get? SubscriptionPlanDetails (get current-subscription-plan current-subscription)) ERROR-INVALID-SUBSCRIPTION-TYPE))
-        (new-plan (unwrap! (map-get? SubscriptionPlanDetails new-plan-type) ERROR-INVALID-SUBSCRIPTION-TYPE))
-        (remaining-time (calculate-remaining-time tx-sender))
-        (remaining-value (* (get last-payment-amount current-subscription) (/ remaining-time (get plan-duration current-plan))))
-    )
-    (asserts! (get subscription-active current-subscription) ERROR-NO-ACTIVE-SUBSCRIPTION)
-    (asserts! (> (get plan-tier new-plan) (get plan-tier current-plan)) ERROR-INVALID-PLAN-CHANGE)
-    (asserts! (not (is-eq new-plan-type (get current-subscription-plan current-subscription))) ERROR-SAME-PLAN-UPGRADE)
-    
-    (let (
-        (upgrade-cost (- (get plan-cost new-plan) remaining-value))
-    )
-    (try! (stx-transfer? (+ upgrade-cost (var-get plan-change-fee)) tx-sender (var-get service-administrator)))
-    
-    (ok (map-set UserSubscriptionDetails
-        tx-sender
-        {
-            subscription-active: true,
-            subscription-start-timestamp: block-height,
-            subscription-end-timestamp: (+ block-height (get plan-duration new-plan)),
-            current-subscription-plan: new-plan-type,
-            last-payment-amount: (get plan-cost new-plan),
-            remaining-credit: u0
-        }
-    ))))
-)
+(define-public (upgrade-subscription-plan (new-plan-type (string-ascii 20)))
+    (begin
+        (let (
+            (current-subscription (unwrap! (map-get? UserSubscriptionDetails tx-sender) ERROR-NO-ACTIVE-SUBSCRIPTION))
+            (current-plan (unwrap! (map-get? SubscriptionPlanDetails (get current-subscription-plan current-subscription)) ERROR-INVALID-SUBSCRIPTION-TYPE))
+            (new-plan (unwrap! (map-get? SubscriptionPlanDetails new-plan-type) ERROR-INVALID-SUBSCRIPTION-TYPE))
+            (remaining-time (calculate-remaining-time tx-sender))
+            (remaining-value (* (get last-payment-amount current-subscription) (/ remaining-time (get plan-duration current-plan))))
+        )
+        (asserts! (get subscription-active current-subscription) ERROR-NO-ACTIVE-SUBSCRIPTION)
+        (asserts! (> (get plan-tier new-plan) (get plan-tier current-plan)) ERROR-INVALID-PLAN-CHANGE)
+        (asserts! (not (is-eq new-plan-type (get current-subscription-plan current-subscription))) ERROR-SAME-PLAN-UPGRADE)
+        
+        (let (
+            (upgrade-cost (- (get plan-cost new-plan) remaining-value))
+        )
+        (try! (stx-transfer? (+ upgrade-cost (var-get plan-change-fee)) tx-sender (var-get service-administrator)))
+        
+        (ok (map-set UserSubscriptionDetails
+            tx-sender
+            {
+                subscription-active: true,
+                subscription-start-timestamp: block-height,
+                subscription-end-timestamp: (+ block-height (get plan-duration new-plan)),
+                current-subscription-plan: new-plan-type,
+                last-payment-amount: (get plan-cost new-plan),
+                remaining-credit: u0
+            }
+        ))
+    ))
+))
 
-(define-public (downgrade-subscription-plan (new-plan-type (string-utf8 20)))
-    (let (
-        (current-subscription (unwrap! (map-get? UserSubscriptionDetails tx-sender) ERROR-NO-ACTIVE-SUBSCRIPTION))
-        (current-plan (unwrap! (map-get? SubscriptionPlanDetails (get current-subscription-plan current-subscription)) ERROR-INVALID-SUBSCRIPTION-TYPE))
-        (new-plan (unwrap! (map-get? SubscriptionPlanDetails new-plan-type) ERROR-INVALID-SUBSCRIPTION-TYPE))
-        (remaining-time (calculate-remaining-time tx-sender))
-    )
-    (asserts! (get subscription-active current-subscription) ERROR-NO-ACTIVE-SUBSCRIPTION)
-    (asserts! (< (get plan-tier new-plan) (get plan-tier current-plan)) ERROR-INVALID-PLAN-CHANGE)
-    
-    (let (
-        (remaining-value (* (get last-payment-amount current-subscription) (/ remaining-time (get plan-duration current-plan))))
-        (credit-amount (- remaining-value (get plan-cost new-plan)))
-    )
-    (try! (stx-transfer? (var-get plan-change-fee) tx-sender (var-get service-administrator)))
-    
-    (ok (map-set UserSubscriptionDetails
-        tx-sender
-        {
-            subscription-active: true,
-            subscription-start-timestamp: block-height,
-            subscription-end-timestamp: (+ block-height (get plan-duration new-plan)),
-            current-subscription-plan: new-plan-type,
-            last-payment-amount: (get plan-cost new-plan),
-            remaining-credit: credit-amount
-        }
-    )))
-)
+(define-public (downgrade-subscription-plan (new-plan-type (string-ascii 20)))
+    (begin
+        (let (
+            (current-subscription (unwrap! (map-get? UserSubscriptionDetails tx-sender) ERROR-NO-ACTIVE-SUBSCRIPTION))
+            (current-plan (unwrap! (map-get? SubscriptionPlanDetails (get current-subscription-plan current-subscription)) ERROR-INVALID-SUBSCRIPTION-TYPE))
+            (new-plan (unwrap! (map-get? SubscriptionPlanDetails new-plan-type) ERROR-INVALID-SUBSCRIPTION-TYPE))
+            (remaining-time (calculate-remaining-time tx-sender))
+        )
+        (asserts! (get subscription-active current-subscription) ERROR-NO-ACTIVE-SUBSCRIPTION)
+        (asserts! (< (get plan-tier new-plan) (get plan-tier current-plan)) ERROR-INVALID-PLAN-CHANGE)
+        
+        (let (
+            (remaining-value (* (get last-payment-amount current-subscription) (/ remaining-time (get plan-duration current-plan))))
+            (credit-amount (- remaining-value (get plan-cost new-plan)))
+        )
+        (try! (stx-transfer? (var-get plan-change-fee) tx-sender (var-get service-administrator)))
+        
+        (ok (map-set UserSubscriptionDetails
+            tx-sender
+            {
+                subscription-active: true,
+                subscription-start-timestamp: block-height,
+                subscription-end-timestamp: (+ block-height (get plan-duration new-plan)),
+                current-subscription-plan: new-plan-type,
+                last-payment-amount: (get plan-cost new-plan),
+                remaining-credit: credit-amount
+            }
+        ))
+    ))
+))
 
 ;; Admin functions
 (define-public (set-refund-period (new-period uint))
@@ -229,7 +258,7 @@
 (begin
     ;; Add default subscription plans
     (try! (create-subscription-plan
-        "basic-tier"
+        "basic-tier"  ;; Basic tier plan
         u50000000  ;; 50 STX
         u2592000   ;; 30 days
         (list 
@@ -242,7 +271,7 @@
     ))
     
     (try! (create-subscription-plan
-        "premium-tier"
+        "premium-tier"  ;; Premium tier plan
         u100000000  ;; 100 STX
         u2592000    ;; 30 days
         (list 
